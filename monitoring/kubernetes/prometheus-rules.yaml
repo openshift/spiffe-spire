@@ -1,0 +1,172 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: spire-alerts
+  labels:
+    app: spire
+    prometheus: kube-prometheus
+spec:
+  groups:
+    # Certificate Alerts
+    - name: spire_certificate_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREServerX509CAExpiryCritical
+          expr: (spire_server_manager_x509_ca_rotate_expiration - time()) < 86400
+          for: 5m
+          labels:
+            severity: critical
+            component: spire-server
+            category: certificate
+          annotations:
+            summary: "SPIRE Server X.509 CA expiring in less than 24 hours"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} X.509 CA certificate expires in {{ $value | humanizeDuration }}.
+              IMMEDIATE ACTION REQUIRED: Certificate rotation must complete before expiry to prevent service outage.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIREServerX509CAExpiryWarning
+          expr: (spire_server_manager_x509_ca_rotate_expiration - time()) < 604800
+          for: 10m
+          labels:
+            severity: warning
+            component: spire-server
+            category: certificate
+          annotations:
+            summary: "SPIRE Server X.509 CA expiring in less than 7 days"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} X.509 CA certificate expires in {{ $value | humanizeDuration }}.
+              Plan certificate rotation to avoid service disruption.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIREAgentSVIDRotationFailures
+          expr: rate(spire_agent_agent_svid_rotate{status!="OK"}[10m]) > 0.1
+          for: 15m
+          labels:
+            severity: warning
+            component: spire-agent
+            category: certificate
+          annotations:
+            summary: "SPIRE Agent experiencing SVID rotation failures"
+            description: |
+              SPIRE Agent has {{ $value | humanize }} SVID rotation errors/s over 10 minutes.
+              Agents may lose connectivity to workloads if rotation continues to fail.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+    # Federation Alerts
+    - name: spire_federation_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREFederationBundleFetchFailing
+          expr: rate(spire_server_bundle_manager_fetch_federated_bundle{status!="OK"}[10m]) > 0.5
+          for: 15m
+          labels:
+            severity: critical
+            component: spire-server
+            category: federation
+          annotations:
+            summary: "Federation bundle fetch failing for trust domain"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} federation bundle fetch has {{ $value | humanize }} errors/s over 10 minutes.
+              Cross-domain authentication will fail if bundle fetching continues to fail.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIREFederationBundleStale
+          expr: increase(spire_server_bundle_manager_update_federated_bundle[24h]) == 0
+          for: 30m
+          labels:
+            severity: critical
+            component: spire-server
+            category: federation
+          annotations:
+            summary: "Federation bundle is extremely stale (24+ hours)"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} federation bundle has not been updated in over 24 hours.
+              This may cause authentication failures due to expired certificates in the bundle.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+    # Agent Health Alerts
+    - name: spire_agent_health_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREAgentAttestationFailuresCritical
+          expr: rate(spire_server_rpc_agent_v1_agent_attest_agent{status!="OK"}[5m]) > 0.5
+          for: 10m
+          labels:
+            severity: critical
+            component: spire-agent
+            category: attestation
+          annotations:
+            summary: "High agent attestation failure rate"
+            description: |
+              Agent attestation has {{ $value | humanize }} errors/s over 5 minutes.
+              New agents cannot join the trust domain. Check node attestor configuration and server logs.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIRENoActiveAgents
+          expr: |
+            (count(spire_server_started{}) or vector(0))
+            - (count(spire_agent_started{}) or vector(0))
+            == count(spire_server_started{})
+          for: 10m
+          labels:
+            severity: critical
+            component: spire-agent
+            category: connectivity
+          annotations:
+            summary: "No active SPIRE agents detected"
+            description: |
+              SPIRE servers are running but NO active agents detected in trust domain.
+              Workload authentication is completely broken. Check agent deployment and connectivity.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIREWorkloadAPINoConnections
+          expr: spire_agent_workload_api_connections == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: spire-agent
+            category: workload-api
+          annotations:
+            summary: "No active Workload API connections"
+            description: |
+              SPIRE Agent has no active Workload API connections for 5+ minutes.
+              Workloads cannot obtain SVIDs. Check agent socket configuration and workload connectivity.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+    # Server Health Alerts
+    - name: spire_server_health_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREServerDown
+          expr: up{job=~".*spire-server.*"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: spire-server
+            category: availability
+          annotations:
+            summary: "SPIRE Server is down"
+            description: |
+              SPIRE Server {{ $labels.instance }} has been down for 5+ minutes.
+              Agents cannot attest, workloads cannot get new SVIDs. IMMEDIATE ACTION REQUIRED.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIREDatastoreConnectionFailures
+          expr: |
+            rate(spire_server_datastore_node_fetch{status!="OK"}[5m]) > 0.5
+            or
+            rate(spire_server_datastore_bundle_fetch{status!="OK"}[5m]) > 0.5
+            or
+            rate(spire_server_datastore_registration_entry_fetch{status!="OK"}[5m]) > 0.5
+          for: 10m
+          labels:
+            severity: critical
+            component: spire-server
+            category: datastore
+          annotations:
+            summary: "SPIRE Server datastore operations failing"
+            description: |
+              Datastore operations have {{ $value | humanize }} errors/s over 5 minutes.
+              Database connectivity issues detected. SPIRE functionality severely impacted.
+            runbook: "https://github.com/spiffe/spire/tree/main/doc"
