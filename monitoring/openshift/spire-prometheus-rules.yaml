@@ -1,0 +1,268 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: spire-monitoring-alerts
+  namespace: openshift-spiffe-spire
+  labels:
+    app.kubernetes.io/name: spire
+    app.kubernetes.io/component: monitoring
+    openshift.io/prometheus-rule-evaluation-scope: leaf-prometheus
+spec:
+  groups:
+    # Certificate Alerts - Critical for Zero Trust compliance
+    - name: spire_certificate_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREServerX509CAExpiryCritical
+          expr: (spire_server_manager_x509_ca_rotate_expiration - time()) < 86400
+          for: 5m
+          labels:
+            severity: critical
+            component: spire-server
+            category: certificate
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "SPIRE Server X.509 CA expiring in less than 24 hours"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} X.509 CA certificate expires in {{ $value | humanizeDuration }}.
+              IMMEDIATE ACTION REQUIRED: Certificate rotation must complete before expiry to prevent service outage.
+
+              Impact: All SVID issuance will fail, breaking Zero Trust authentication cluster-wide.
+            runbook_url: "https://github.com/spiffe/spire/tree/main/doc"
+            alert_type: "Platform"
+
+        - alert: SPIREServerX509CAExpiryWarning
+          expr: (spire_server_manager_x509_ca_rotate_expiration - time()) < 604800
+          for: 10m
+          labels:
+            severity: warning
+            component: spire-server
+            category: certificate
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "SPIRE Server X.509 CA expiring in less than 7 days"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} X.509 CA certificate expires in {{ $value | humanizeDuration }}.
+              Plan certificate rotation during next maintenance window.
+            runbook_url: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIREAgentExpiringSVIDsHigh
+          expr: spire_agent_cache_manager_expiring_svids > 50
+          for: 5m
+          labels:
+            severity: critical
+            component: spire-agent
+            category: certificate
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "SPIRE Agent has high number of expiring SVIDs"
+            description: |
+              SPIRE Agent has {{ $value }} SVIDs expiring soon.
+              This may indicate SVID rotation is not working correctly on node {{ $labels.instance }}.
+
+    # Federation Alerts - Multi-cluster OpenShift deployments
+    - name: spire_federation_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREFederationBundleFetchFailing
+          expr: rate(spire_server_bundle_manager_fetch_federated_bundle{status!="OK"}[10m]) > 0.5
+          for: 15m
+          labels:
+            severity: critical
+            component: spire-server
+            category: federation
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "Federation bundle fetch failing for trust domain"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} federation bundle fetch has {{ $value | humanize }} errors/s.
+              Cross-cluster authentication between OpenShift clusters will fail.
+
+              Check:
+              - Network connectivity between clusters
+              - Federation endpoint availability
+              - Certificate validity on federation endpoint
+            runbook_url: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIREFederationBundleStale
+          expr: increase(spire_server_bundle_manager_update_federated_bundle[24h]) == 0
+          for: 30m
+          labels:
+            severity: critical
+            component: spire-server
+            category: federation
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "Federation bundle is extremely stale (24+ hours)"
+            description: |
+              Trust domain {{ $labels.trust_domain_id }} federation bundle has not been updated in over 24 hours.
+              Federated workloads may fail to authenticate due to expired certificates in bundle.
+
+    # Agent Health Alerts
+    - name: spire_agent_health_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREAgentAttestationFailuresCritical
+          expr: rate(spire_server_rpc_agent_v1_agent_attest_agent{status!="OK"}[5m]) > 0.5
+          for: 10m
+          labels:
+            severity: critical
+            component: spire-agent
+            category: attestation
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "High agent attestation failure rate"
+            description: |
+              Agent attestation has {{ $value | humanize }} errors/s over 5 minutes.
+              New nodes cannot join the trust domain.
+
+              Common causes:
+              - Incorrect node attestor configuration (k8s-psat)
+              - RBAC issues preventing service account token access
+              - Server CA rotation in progress
+            runbook_url: "https://github.com/spiffe/spire/tree/main/doc"
+
+        - alert: SPIRENoActiveAgents
+          expr: |
+            (count(spire_server_started{namespace="openshift-spiffe-spire"}) or vector(0))
+            - (count(spire_agent_started{namespace="openshift-spiffe-spire"}) or vector(0))
+            == count(spire_server_started{namespace="openshift-spiffe-spire"})
+          for: 10m
+          labels:
+            severity: critical
+            component: spire-agent
+            category: connectivity
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "No active SPIRE agents detected in cluster"
+            description: |
+              SPIRE servers are running but NO active agents detected.
+              Workload authentication is completely broken cluster-wide.
+
+              Check:
+              - DaemonSet status: oc get daemonset spire-agent -n openshift-spiffe-spire
+              - Agent pod logs: oc logs -n openshift-spiffe-spire -l app=spire-agent
+              - Node taints/tolerations blocking agent deployment
+
+        - alert: SPIREWorkloadAPINoConnections
+          expr: spire_agent_workload_api_connections == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: spire-agent
+            category: workload-api
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "No active Workload API connections on agent"
+            description: |
+              SPIRE Agent {{ $labels.instance }} has no active Workload API connections for 5+ minutes.
+              Workloads on this node cannot obtain SVIDs.
+
+              Check:
+              - Unix socket permissions and path
+              - SELinux context (OpenShift uses enforcing mode)
+              - Pod security context allowing socket access
+
+        - alert: SPIREAgentCountDecreased
+          expr: |
+            (count(spire_agent_started{namespace="openshift-spiffe-spire"}) or vector(0))
+            <
+            (count(spire_agent_started{namespace="openshift-spiffe-spire"} offset 30m) or vector(0)) * 0.7
+          for: 10m
+          labels:
+            severity: warning
+            component: spire-agent
+            category: connectivity
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "SPIRE agent count decreased by 30%+ in cluster"
+            description: |
+              Active SPIRE agent count dropped to {{ $value }} (30%+ decrease in last 30 minutes).
+              Possible causes:
+              - Node scaling down (check MachineSet status)
+              - Agent pod crashes (check DaemonSet status)
+              - Infrastructure issues
+
+    # Server Health Alerts
+    - name: spire_server_health_alerts
+      interval: 60s
+      rules:
+        - alert: SPIREServerDown
+          expr: up{job="spire-server", namespace="openshift-spiffe-spire"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: spire-server
+            category: availability
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "SPIRE Server is down"
+            description: |
+              SPIRE Server {{ $labels.instance }} has been down for 5+ minutes.
+              Agents cannot attest, workloads cannot get new SVIDs. IMMEDIATE ACTION REQUIRED.
+
+              Check:
+              - Server deployment status: oc get deployment spire-server -n openshift-spiffe-spire
+              - Server pod logs: oc logs -n openshift-spiffe-spire -l app=spire-server
+              - Datastore connectivity
+
+        - alert: SPIREDatastoreConnectionFailures
+          expr: |
+            rate(spire_server_datastore_node_fetch{status!="OK"}[5m]) > 0.5
+            or
+            rate(spire_server_datastore_bundle_fetch{status!="OK"}[5m]) > 0.5
+            or
+            rate(spire_server_datastore_registration_entry_fetch{status!="OK"}[5m]) > 0.5
+          for: 10m
+          labels:
+            severity: critical
+            component: spire-server
+            category: datastore
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "SPIRE Server datastore operations failing"
+            description: |
+              Datastore operations have {{ $value | humanize }} errors/s.
+
+              If using PostgreSQL (default for OpenShift):
+              - Check PostgreSQL service status
+              - Verify connection pool not exhausted
+              - Check database disk space
+
+              Database: {{ $labels.database }}
+
+        - alert: SPIREServerRestarted
+          expr: spire_server_uptime_in_ms < 300000
+          for: 2m
+          labels:
+            severity: warning
+            component: spire-server
+            category: availability
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "SPIRE Server was recently restarted"
+            description: |
+              SPIRE Server uptime is {{ $value | humanize }}ms.
+              Server was restarted recently. Check logs for crash or restart reason.
+
+              OOMKilled events: oc get events -n openshift-spiffe-spire | grep OOMKilled
+
+    # OpenShift-specific operational alerts
+    - name: spire_openshift_operational_alerts
+      interval: 60s
+      rules:
+        - alert: SPIRESkippedNodeEventIDsHigh
+          expr: spire_server_node_skipped_node_event_ids_count > 100
+          for: 10m
+          labels:
+            severity: critical
+            component: spire-server
+            category: datastore
+            namespace: openshift-spiffe-spire
+          annotations:
+            summary: "High number of skipped node event IDs (PostgreSQL issue)"
+            description: |
+              {{ $value }} skipped node event IDs detected.
+              This indicates PostgreSQL autoincrement configuration issues or event-based cache problems.
+
+              Known issue: https://github.com/spiffe/spire/issues/5341

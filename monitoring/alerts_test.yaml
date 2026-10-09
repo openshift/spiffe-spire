@@ -1,0 +1,476 @@
+# promtool unit tests for SPIRE alerting rules
+# Run: promtool test rules monitoring/alerts/alerts_test.yaml
+
+rule_files:
+  - alerts/agent-alerts.yaml
+  - alerts/server-alerts.yaml
+  - alerts/certificate-alerts.yaml
+  - alerts/federation-alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # Server alerts
+
+  - name: "SPIREServerDown fires after 5m of target being down"
+    interval: 1m
+    input_series:
+      - series: 'up{job="spire-server-metrics", instance="server-1:9988"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SPIREServerDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SPIREServerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-server
+              category: availability
+              job: spire-server-metrics
+              instance: "server-1:9988"
+            exp_annotations:
+              summary: "SPIRE Server is down"
+              description: "SPIRE Server server-1:9988 has been down for 5+ minutes.\nAgents cannot attest, workloads cannot get new SVIDs. IMMEDIATE ACTION REQUIRED.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREServerDown negative - target is up"
+    interval: 1m
+    input_series:
+      - series: 'up{job="spire-server-metrics", instance="server-1:9988"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SPIREServerDown
+        exp_alerts: []
+
+  - name: "SPIREServerRestarted fires when uptime < 300000ms"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_uptime_in_ms{instance="server-1:9988"}'
+        values: "100000x10"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SPIREServerRestarted
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SPIREServerRestarted
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: spire-server
+              category: availability
+              instance: "server-1:9988"
+            exp_annotations:
+              summary: "SPIRE Server was recently restarted"
+              description: "SPIRE Server uptime is 100kms.\nServer was restarted recently. Check logs for crash or restart reason.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREServerRestarted negative - uptime above threshold"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_uptime_in_ms{instance="server-1:9988"}'
+        values: "500000x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SPIREServerRestarted
+        exp_alerts: []
+
+  - name: "SPIRESkippedNodeEventIDsHigh fires when > 100 skipped IDs"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_node_skipped_node_event_ids_count{instance="server-1:9988"}'
+        values: "150x20"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SPIRESkippedNodeEventIDsHigh
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: SPIRESkippedNodeEventIDsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-server
+              category: datastore
+              instance: "server-1:9988"
+            exp_annotations:
+              summary: "High number of skipped node event IDs"
+              description: "150 skipped node event IDs detected.\nDatabase autoincrement configuration may be incorrect or events are being missed.\n"
+              runbook: "https://github.com/spiffe/spire/issues/5341"
+
+  - name: "SPIRESkippedNodeEventIDsHigh negative - below threshold"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_node_skipped_node_event_ids_count{instance="server-1:9988"}'
+        values: "50x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SPIRESkippedNodeEventIDsHigh
+        exp_alerts: []
+
+  - name: "SPIREDatastoreConnectionFailures fires at rate > 0.5/s"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_datastore_node_fetch{status="INTERNAL", instance="server-1:9988"}'
+        values: "0+60x25"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SPIREDatastoreConnectionFailures
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: SPIREDatastoreConnectionFailures
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-server
+              category: datastore
+              status: INTERNAL
+              instance: "server-1:9988"
+            exp_annotations:
+              summary: "SPIRE Server datastore operations failing"
+              description: "Datastore operations have 1 errors/s over 5 minutes.\nDatabase connectivity issues detected. SPIRE functionality severely impacted.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  # Certificate alerts
+
+  - name: "SPIREServerX509CAExpiryCritical fires when CA expires < 24h"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_manager_x509_ca_rotate_expiration{trust_domain_id="example.org"}'
+        values: "3600x45"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SPIREServerX509CAExpiryCritical
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SPIREServerX509CAExpiryCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-server
+              category: certificate
+              trust_domain_id: example.org
+            exp_annotations:
+              summary: "SPIRE Server X.509 CA expiring in less than 24 hours"
+              description: "Trust domain example.org X.509 CA certificate expires in 54m 0s.\nIMMEDIATE ACTION REQUIRED: Certificate rotation must complete before expiry to prevent service outage.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREServerX509CAExpiryWarning fires when CA expires < 7d"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_manager_x509_ca_rotate_expiration{trust_domain_id="example.org"}'
+        values: "3600x45"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: SPIREServerX509CAExpiryWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: spire-server
+              category: certificate
+              trust_domain_id: example.org
+            exp_annotations:
+              summary: "SPIRE Server X.509 CA expiring in less than 7 days"
+              description: "Trust domain example.org X.509 CA certificate expires in 49m 0s.\nPlan certificate rotation to avoid service disruption.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "Certificate expiry negative - far future expiration"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_manager_x509_ca_rotate_expiration{trust_domain_id="example.org"}'
+        values: "99999999x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SPIREServerX509CAExpiryCritical
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SPIREServerX509CAExpiryWarning
+        exp_alerts: []
+
+  - name: "SPIREServerX509CATTLLow fires when TTL < 1 day"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_manager_x509_ca_rotate_ttl{trust_domain_id="example.org"}'
+        values: "3600x20"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SPIREServerX509CATTLLow
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-server
+              category: certificate
+              trust_domain_id: example.org
+            exp_annotations:
+              summary: "SPIRE Server X.509 CA has abnormally low TTL"
+              description: "Trust domain example.org X.509 CA TTL is 1h 0m 0s.\nThis may indicate a misconfiguration or failed rotation. Investigate immediately.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREAgentExpiringSVIDsHigh fires when > 50 expiring SVIDs"
+    interval: 1m
+    input_series:
+      - series: 'spire_agent_cache_manager_expiring_svids{instance="agent-1:9989"}'
+        values: "60x20"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SPIREAgentExpiringSVIDsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-agent
+              category: certificate
+              instance: "agent-1:9989"
+            exp_annotations:
+              summary: "SPIRE Agent has high number of expiring SVIDs"
+              description: "SPIRE Agent has 60 SVIDs expiring soon.\nThis may indicate SVID rotation is not working correctly.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREAgentExpiringSVIDsHigh negative - under threshold"
+    interval: 1m
+    input_series:
+      - series: 'spire_agent_cache_manager_expiring_svids{instance="agent-1:9989"}'
+        values: "10x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SPIREAgentExpiringSVIDsHigh
+        exp_alerts: []
+
+  # Agent alerts
+
+  - name: "SPIREAgentAttestationFailuresCritical fires at rate > 0.5/s"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_rpc_agent_v1_agent_attest_agent{status="INTERNAL", instance="server-1:9988"}'
+        values: "0+60x25"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SPIREAgentAttestationFailuresCritical
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: SPIREAgentAttestationFailuresCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-agent
+              category: attestation
+              status: INTERNAL
+              instance: "server-1:9988"
+            exp_annotations:
+              summary: "High agent attestation failure rate"
+              description: "Agent attestation has 1 errors/s over 5 minutes.\nNew agents cannot join the trust domain. Check node attestor configuration and server logs.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREAgentAttestationFailuresCritical negative - low rate"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_rpc_agent_v1_agent_attest_agent{status="INTERNAL", instance="server-1:9988"}'
+        values: "0+1x25"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: SPIREAgentAttestationFailuresCritical
+        exp_alerts: []
+
+  - name: "SPIREWorkloadAPINoConnections fires when connections == 0"
+    interval: 1m
+    input_series:
+      - series: 'spire_agent_workload_api_connections{instance="agent-1:9989"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SPIREWorkloadAPINoConnections
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SPIREWorkloadAPINoConnections
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-agent
+              category: workload-api
+              instance: "agent-1:9989"
+            exp_annotations:
+              summary: "No active Workload API connections"
+              description: "SPIRE Agent has no active Workload API connections for 5+ minutes.\nWorkloads cannot obtain SVIDs. Check agent socket configuration and workload connectivity.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREWorkloadAPINoConnections negative - has connections"
+    interval: 1m
+    input_series:
+      - series: 'spire_agent_workload_api_connections{instance="agent-1:9989"}'
+        values: "5x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SPIREWorkloadAPINoConnections
+        exp_alerts: []
+
+  - name: "SPIREAgentTaintedX509SVIDsHigh fires when > 10 tainted SVIDs"
+    interval: 1m
+    input_series:
+      - series: 'spire_agent_cache_manager_tainted_x509_svids_workload{instance="agent-1:9989"}'
+        values: "15x25"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SPIREAgentTaintedX509SVIDsHigh
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: SPIREAgentTaintedX509SVIDsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: spire-agent
+              category: svid-management
+              instance: "agent-1:9989"
+            exp_annotations:
+              summary: "High number of tainted X.509 SVIDs in agent cache"
+              description: "SPIRE Agent has 15 tainted X.509 SVIDs in cache for 15+ minutes.\nCache manager may not be processing tainted SVIDs correctly.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREAgentTaintedX509SVIDsHigh negative - under threshold"
+    interval: 1m
+    input_series:
+      - series: 'spire_agent_cache_manager_tainted_x509_svids_workload{instance="agent-1:9989"}'
+        values: "5x25"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SPIREAgentTaintedX509SVIDsHigh
+        exp_alerts: []
+
+  - name: "SPIRENoActiveAgents fires when servers run but no agents"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_started{instance="server-1:9988", version="1.9.0", trust_domain_id="example.org"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: SPIRENoActiveAgents
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-agent
+              category: connectivity
+            exp_annotations:
+              summary: "No active SPIRE agents detected"
+              description: "SPIRE servers are running but NO active agents detected in trust domain.\nWorkload authentication is completely broken. Check agent deployment and connectivity.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIRENoActiveAgents negative - agents are running"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_started{instance="server-1:9988", version="1.9.0", trust_domain_id="example.org"}'
+        values: "1x20"
+      - series: 'spire_agent_started{instance="agent-1:9989", version="1.9.0", trust_domain_id="example.org"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SPIRENoActiveAgents
+        exp_alerts: []
+
+  # Federation alerts
+
+  - name: "SPIREFederationBundleFetchFailing fires at rate > 0.5/s"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_bundle_manager_fetch_federated_bundle{status="INTERNAL", trust_domain_id="federated.org"}'
+        values: "0+60x35"
+    alert_rule_test:
+      - eval_time: 26m
+        alertname: SPIREFederationBundleFetchFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-server
+              category: federation
+              status: INTERNAL
+              trust_domain_id: federated.org
+            exp_annotations:
+              summary: "Federation bundle fetch failing for trust domain"
+              description: "Trust domain federated.org federation bundle fetch has 1 errors/s over 10 minutes.\nCross-domain authentication will fail if bundle fetching continues to fail.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREFederationBundleUpdated fires when counter increments"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_bundle_manager_update_federated_bundle{trust_domain_id="federated.org"}'
+        values: "0+1x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SPIREFederationBundleUpdated
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              component: spire-server
+              category: federation
+              trust_domain_id: federated.org
+            exp_annotations:
+              summary: "Federation bundle successfully updated"
+              description: "Trust domain federated.org federation bundle was successfully updated.\nThis is informational - no action required.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREFederationBundleNotUpdated fires when counter flat 2h+"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_bundle_manager_update_federated_bundle{trust_domain_id="federated.org"}'
+        values: "100x200"
+    alert_rule_test:
+      - eval_time: 2h20m
+        alertname: SPIREFederationBundleNotUpdated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: spire-server
+              category: federation
+              trust_domain_id: federated.org
+            exp_annotations:
+              summary: "Federation bundle has not been updated recently"
+              description: "Trust domain federated.org federation bundle has not been updated in the last 2 hours.\nBundle refresh may be stalled. Check federation endpoint connectivity.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREFederationBundleNotUpdated negative - counter incrementing"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_bundle_manager_update_federated_bundle{trust_domain_id="federated.org"}'
+        values: "0+1x200"
+    alert_rule_test:
+      - eval_time: 2h20m
+        alertname: SPIREFederationBundleNotUpdated
+        exp_alerts: []
+
+  - name: "SPIREDatastoreBundleOperationsFailing fires at rate > 0.1/s"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_datastore_bundle_fetch{status="INTERNAL", instance="server-1:9988"}'
+        values: "0+60x25"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: SPIREDatastoreBundleOperationsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: spire-server
+              category: federation
+              status: INTERNAL
+              instance: "server-1:9988"
+            exp_annotations:
+              summary: "Datastore bundle fetch operations failing"
+              description: "Datastore bundle fetch operations have 1 errors/s.\nDatabase connectivity or performance issues may affect federation.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+  - name: "SPIREBundlePruningFailing fires at rate > 0.5/s"
+    interval: 1m
+    input_series:
+      - series: 'spire_server_datastore_bundle_prune{status="INTERNAL", instance="server-1:9988"}'
+        values: "0+60x35"
+    alert_rule_test:
+      - eval_time: 26m
+        alertname: SPIREBundlePruningFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: spire-server
+              category: federation
+              status: INTERNAL
+              instance: "server-1:9988"
+            exp_annotations:
+              summary: "Bundle pruning operations failing"
+              description: "Bundle pruning has 1 errors/s over 10 minutes.\nThis may cause bundle bloat and performance degradation.\n"
+              runbook: "https://github.com/spiffe/spire/tree/main/doc"

@@ -1,0 +1,142 @@
+# SPIRE Certificate Expiration Alerts
+# These alerts monitor X.509 CA and SVID certificate expiration to prevent
+# service disruption due to expired certificates.
+
+groups:
+  - name: spire_certificate_alerts
+    interval: 60s
+    rules:
+      # Critical: X.509 CA expiring within 24 hours
+      - alert: SPIREServerX509CAExpiryCritical
+        expr: (spire_server_manager_x509_ca_rotate_expiration - time()) < 86400
+        for: 5m
+        labels:
+          severity: critical
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "SPIRE Server X.509 CA expiring in less than 24 hours"
+          description: |
+            Trust domain {{ $labels.trust_domain_id }} X.509 CA certificate expires in {{ $value | humanizeDuration }}.
+            IMMEDIATE ACTION REQUIRED: Certificate rotation must complete before expiry to prevent service outage.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: X.509 CA expiring within 7 days
+      - alert: SPIREServerX509CAExpiryWarning
+        expr: (spire_server_manager_x509_ca_rotate_expiration - time()) < 604800
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "SPIRE Server X.509 CA expiring in less than 7 days"
+          description: |
+            Trust domain {{ $labels.trust_domain_id }} X.509 CA certificate expires in {{ $value | humanizeDuration }}.
+            Plan certificate rotation to avoid service disruption.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Info: X.509 CA expiring within 30 days
+      - alert: SPIREServerX509CAExpiryInfo
+        expr: (spire_server_manager_x509_ca_rotate_expiration - time()) < 2592000
+        for: 30m
+        labels:
+          severity: info
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "SPIRE Server X.509 CA expiring in less than 30 days"
+          description: |
+            Trust domain {{ $labels.trust_domain_id }} X.509 CA certificate expires in {{ $value | humanizeDuration }}.
+            Review and schedule certificate rotation during next maintenance window.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: X.509 CA TTL is abnormally low (less than 1 day)
+      - alert: SPIREServerX509CATTLLow
+        expr: spire_server_manager_x509_ca_rotate_ttl < 86400
+        for: 5m
+        labels:
+          severity: critical
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "SPIRE Server X.509 CA has abnormally low TTL"
+          description: |
+            Trust domain {{ $labels.trust_domain_id }} X.509 CA TTL is {{ $value | humanizeDuration }}.
+            This may indicate a misconfiguration or failed rotation. Investigate immediately.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: X.509 SVID signing failures
+      - alert: SPIREServerX509SVIDSigningFailures
+        expr: rate(spire_server_server_ca_sign_x509_svid{status!="OK"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "SPIRE Server experiencing X.509 SVID signing failures"
+          description: |
+            SPIRE Server has {{ $value | humanize }} X.509 SVID signing errors/s over 5 minutes.
+            Check server logs for CA issues or datastore problems.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: JWT SVID signing failures
+      - alert: SPIREServerJWTSVIDSigningFailures
+        expr: rate(spire_server_server_ca_sign_jwt_svid{status!="OK"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "SPIRE Server experiencing JWT SVID signing failures"
+          description: |
+            SPIRE Server has {{ $value | humanize }} JWT SVID signing errors/s over 5 minutes.
+            Check server logs for JWT key manager issues.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Agent SVID rotation failures
+      - alert: SPIREAgentSVIDRotationFailures
+        expr: rate(spire_agent_agent_svid_rotate{status!="OK"}[10m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: certificate
+        annotations:
+          summary: "SPIRE Agent experiencing SVID rotation failures"
+          description: |
+            SPIRE Agent has {{ $value | humanize }} SVID rotation errors/s over 10 minutes.
+            Agents may lose connectivity to workloads if rotation continues to fail.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: High number of expiring SVIDs on agents
+      - alert: SPIREAgentExpiringSVIDsHigh
+        expr: spire_agent_cache_manager_expiring_svids > 50
+        for: 5m
+        labels:
+          severity: critical
+          component: spire-agent
+          category: certificate
+        annotations:
+          summary: "SPIRE Agent has high number of expiring SVIDs"
+          description: |
+            SPIRE Agent has {{ $value }} SVIDs expiring soon.
+            This may indicate SVID rotation is not working correctly.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Outdated SVIDs present
+      - alert: SPIREAgentOutdatedSVIDsPresent
+        expr: spire_agent_cache_manager_outdated_svids > 0
+        for: 30m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: certificate
+        annotations:
+          summary: "SPIRE Agent has outdated SVIDs in cache"
+          description: |
+            SPIRE Agent has {{ $value }} outdated SVIDs in cache for more than 30 minutes.
+            Cache cleanup may not be functioning correctly.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"

@@ -1,0 +1,199 @@
+# SPIRE Agent Health Alerts
+# These alerts monitor agent registration, attestation, and workload API health
+# to ensure agents can properly authenticate workloads.
+
+groups:
+  - name: spire_agent_health_alerts
+    interval: 60s
+    rules:
+      # Critical: Agent attestation failures
+      - alert: SPIREAgentAttestationFailuresCritical
+        expr: rate(spire_server_rpc_agent_v1_agent_attest_agent{status!="OK"}[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+          component: spire-agent
+          category: attestation
+        annotations:
+          summary: "High agent attestation failure rate"
+          description: |
+            Agent attestation has {{ $value | humanize }} errors/s over 5 minutes.
+            New agents cannot join the trust domain. Check node attestor configuration and server logs.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Intermittent agent attestation failures
+      - alert: SPIREAgentAttestationFailuresWarning
+        expr: rate(spire_server_rpc_agent_v1_agent_attest_agent{status!="OK"}[10m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: attestation
+        annotations:
+          summary: "Intermittent agent attestation failures"
+          description: |
+            Agent attestation has {{ $value | humanize }} errors/s over 10 minutes.
+            Some agents may be failing to join. Review node attestor logs.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: No active agents in trust domain
+      - alert: SPIRENoActiveAgents
+        expr: |
+          (count(spire_server_started{}) or vector(0))
+          - (count(spire_agent_started{}) or vector(0))
+          == count(spire_server_started{})
+        for: 10m
+        labels:
+          severity: critical
+          component: spire-agent
+          category: connectivity
+        annotations:
+          summary: "No active SPIRE agents detected"
+          description: |
+            SPIRE servers are running but NO active agents detected in trust domain.
+            Workload authentication is completely broken. Check agent deployment and connectivity.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Agent count decreased significantly
+      - alert: SPIREAgentCountDecreased
+        expr: |
+          (count(spire_agent_started{}) or vector(0))
+          <
+          (count(spire_agent_started{} offset 30m) or vector(0)) * 0.7
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: connectivity
+        annotations:
+          summary: "SPIRE agent count decreased by 30%+"
+          description: |
+            Active SPIRE agent count dropped to {{ $value }} (30%+ decrease in last 30 minutes).
+            Possible agent crashes or infrastructure issues.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Workload API attestation failures
+      - alert: SPIREWorkloadAttestationFailures
+        expr: rate(spire_agent_workload_api_workload_attestation{status!="OK"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: workload-api
+        annotations:
+          summary: "Workload attestation failures detected"
+          description: |
+            Workload attestation has {{ $value | humanize }} errors/s over 5 minutes.
+            Workloads may fail to obtain SVIDs. Check workload attestor configuration.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: Workload API connections zero
+      - alert: SPIREWorkloadAPINoConnections
+        expr: spire_agent_workload_api_connections == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: spire-agent
+          category: workload-api
+        annotations:
+          summary: "No active Workload API connections"
+          description: |
+            SPIRE Agent has no active Workload API connections for 5+ minutes.
+            Workloads cannot obtain SVIDs. Check agent socket configuration and workload connectivity.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: High number of tainted X.509 SVIDs
+      - alert: SPIREAgentTaintedX509SVIDsHigh
+        expr: spire_agent_cache_manager_tainted_x509_svids_workload > 10
+        for: 15m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: svid-management
+        annotations:
+          summary: "High number of tainted X.509 SVIDs in agent cache"
+          description: |
+            SPIRE Agent has {{ $value }} tainted X.509 SVIDs in cache for 15+ minutes.
+            Cache manager may not be processing tainted SVIDs correctly.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: High number of tainted JWT SVIDs
+      - alert: SPIREAgentTaintedJWTSVIDsHigh
+        expr: spire_agent_cache_manager_tainted_jwt_svids_workload > 10
+        for: 15m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: svid-management
+        annotations:
+          summary: "High number of tainted JWT SVIDs in agent cache"
+          description: |
+            SPIRE Agent has {{ $value }} tainted JWT SVIDs in cache for 15+ minutes.
+            Cache manager may not be processing tainted SVIDs correctly.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Agent sync failures
+      - alert: SPIREAgentSyncFailures
+        expr: rate(spire_agent_manager_sync_fetch_entries_updates{status!="OK"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: sync
+        annotations:
+          summary: "Agent failing to sync entries from server"
+          description: |
+            Agent sync has {{ $value | humanize }} errors/s over 5 minutes.
+            Agent may have stale registration entries. Check server connectivity.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Agent SVID fetch failures
+      - alert: SPIREAgentSVIDFetchFailures
+        expr: rate(spire_agent_manager_sync_fetch_svids_updates{status!="OK"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: sync
+        annotations:
+          summary: "Agent failing to fetch SVIDs from server"
+          description: |
+            Agent SVID fetch has {{ $value | humanize }} errors/s over 5 minutes.
+            Workloads may not receive updated SVIDs. Check server connectivity and CA health.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: Agent key manager failures
+      - alert: SPIREAgentKeyManagerFailures
+        expr: |
+          rate(spire_agent_agent_key_manager_generate_key_pair{status!="OK"}[5m]) > 0.5
+          or
+          rate(spire_agent_agent_key_manager_store_private_key{status!="OK"}[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+          component: spire-agent
+          category: key-management
+        annotations:
+          summary: "Agent key manager experiencing failures"
+          description: |
+            Agent key manager has {{ $value | humanize }} errors/s over 5 minutes.
+            Key generation or storage is failing. Check key manager plugin configuration.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: High workload attestor latency
+      - alert: SPIREWorkloadAttestorLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            rate(spire_agent_workload_api_workload_attestor_elapsed_time_bucket[5m])
+          ) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-agent
+          category: workload-api
+        annotations:
+          summary: "Workload attestor latency is high"
+          description: |
+            Workload attestor {{ $labels.attestor }} p95 latency is {{ $value }}ms.
+            Workload SVID issuance may be slow. Check attestor {{ $labels.attestor }} performance.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
