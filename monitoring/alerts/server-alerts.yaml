@@ -1,0 +1,225 @@
+# SPIRE Server Health Alerts
+# These alerts monitor SPIRE server availability, datastore health, and general
+# operational metrics to ensure the control plane is functioning correctly.
+
+groups:
+  - name: spire_server_health_alerts
+    interval: 60s
+    rules:
+      # Critical: SPIRE server down
+      - alert: SPIREServerDown
+        expr: up{job=~".*spire-server.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: spire-server
+          category: availability
+        annotations:
+          summary: "SPIRE Server is down"
+          description: |
+            SPIRE Server {{ $labels.instance }} has been down for 5+ minutes.
+            Agents cannot attest, workloads cannot get new SVIDs. IMMEDIATE ACTION REQUIRED.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: SPIRE server restarted recently
+      - alert: SPIREServerRestarted
+        expr: spire_server_uptime_in_ms < 300000
+        for: 2m
+        labels:
+          severity: warning
+          component: spire-server
+          category: availability
+        annotations:
+          summary: "SPIRE Server was recently restarted"
+          description: |
+            SPIRE Server uptime is {{ $value | humanize }}ms.
+            Server was restarted recently. Check logs for crash or restart reason.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: Datastore connection failures
+      - alert: SPIREDatastoreConnectionFailures
+        expr: |
+          rate(spire_server_datastore_node_fetch{status!="OK"}[5m]) > 0.5
+          or
+          rate(spire_server_datastore_bundle_fetch{status!="OK"}[5m]) > 0.5
+          or
+          rate(spire_server_datastore_registration_entry_fetch{status!="OK"}[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+          component: spire-server
+          category: datastore
+        annotations:
+          summary: "SPIRE Server datastore operations failing"
+          description: |
+            Datastore operations have {{ $value | humanize }} errors/s over 5 minutes.
+            Database connectivity issues detected. SPIRE functionality severely impacted.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Entry cache reload failures
+      - alert: SPIREEntryCacheReloadFailures
+        expr: rate(spire_server_entry_cache_reload{status!="OK"}[10m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          component: spire-server
+          category: cache
+        annotations:
+          summary: "Entry cache reload failures detected"
+          description: |
+            Entry cache reload has {{ $value | humanize }} errors/s over 10 minutes.
+            Agents may receive stale registration entries. Check datastore connectivity.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: High entry cache reload latency
+      - alert: SPIREEntryCacheReloadLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            rate(spire_server_entry_cache_reload_elapsed_time_bucket[5m])
+          ) > 10000
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-server
+          category: cache
+        annotations:
+          summary: "Entry cache reload latency is high"
+          description: |
+            Entry cache reload p95 latency is {{ $value }}ms.
+            Large number of entries or datastore performance issues may be slowing cache reload.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: High skipped node event IDs
+      - alert: SPIRESkippedNodeEventIDsHigh
+        expr: spire_server_node_skipped_node_event_ids_count > 100
+        for: 10m
+        labels:
+          severity: critical
+          component: spire-server
+          category: datastore
+        annotations:
+          summary: "High number of skipped node event IDs"
+          description: |
+            {{ $value }} skipped node event IDs detected.
+            Database autoincrement configuration may be incorrect or events are being missed.
+          runbook: "https://github.com/spiffe/spire/issues/5341"
+
+      # Critical: High skipped entry event IDs
+      - alert: SPIRESkippedEntryEventIDsHigh
+        expr: spire_server_entry_skipped_entry_event_ids_count > 100
+        for: 10m
+        labels:
+          severity: critical
+          component: spire-server
+          category: datastore
+        annotations:
+          summary: "High number of skipped entry event IDs"
+          description: |
+            {{ $value }} skipped entry event IDs detected.
+            Database autoincrement configuration may be incorrect or events are being missed.
+          runbook: "https://github.com/spiffe/spire/issues/5341"
+
+      # Warning: Registration entry creation failures
+      - alert: SPIRERegistrationEntryCreationFailures
+        expr: rate(spire_server_datastore_registration_entry_create{status!="OK"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-server
+          category: datastore
+        annotations:
+          summary: "Registration entry creation failures detected"
+          description: |
+            Registration entry creation has {{ $value | humanize }} errors/s over 5 minutes.
+            New workload registrations are failing. Check datastore health and logs.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Node registration failures
+      - alert: SPIRENodeRegistrationFailures
+        expr: rate(spire_server_datastore_node_create{status!="OK"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: spire-server
+          category: datastore
+        annotations:
+          summary: "Node registration failures detected"
+          description: |
+            Node registration has {{ $value | humanize }} errors/s over 5 minutes.
+            Agent attestation is being affected. Check datastore health.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Critical: Join token creation failures
+      - alert: SPIREJoinTokenCreationFailures
+        expr: rate(spire_server_datastore_join_token_create{status!="OK"}[5m]) > 0.5
+        for: 10m
+        labels:
+          severity: critical
+          component: spire-server
+          category: datastore
+        annotations:
+          summary: "Join token creation failures"
+          description: |
+            Join token creation has {{ $value | humanize }} errors/s over 5 minutes.
+            New agents using join tokens cannot attest. Check datastore connectivity.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Registration entry pruning failures
+      - alert: SPIRERegistrationEntryPruningFailures
+        expr: rate(spire_server_registration_entry_manager_prune{status!="OK"}[10m]) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+          component: spire-server
+          category: maintenance
+        annotations:
+          summary: "Registration entry pruning failures"
+          description: |
+            Registration entry pruning has {{ $value | humanize }} errors/s over 10 minutes.
+            Expired entries may accumulate in datastore, affecting performance.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Info: CA rotation in progress
+      - alert: SPIREX509CARotationInProgress
+        expr: rate(spire_server_ca_manager_x509_ca_prepare{status="OK"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: info
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "X.509 CA rotation in progress"
+          description: |
+            X.509 CA rotation is in progress for trust domain {{ $labels.trust_domain_id }}.
+            This is informational - monitor for completion.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: CA preparation failures
+      - alert: SPIREX509CAPreparationFailures
+        expr: rate(spire_server_ca_manager_x509_ca_prepare{status!="OK"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "X.509 CA preparation failures"
+          description: |
+            X.509 CA preparation failures detected for trust domain {{ $labels.trust_domain_id }}.
+            CA rotation may be stuck. Check server logs for CA manager errors.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
+
+      # Warning: Server SVID rotation failures
+      - alert: SPIREServerSVIDRotationFailures
+        expr: rate(spire_server_svid_rotate{status!="OK"}[10m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          component: spire-server
+          category: certificate
+        annotations:
+          summary: "Server SVID rotation failures"
+          description: |
+            Server SVID rotation has {{ $value | humanize }} errors/s over 10 minutes.
+            Server may lose ability to communicate with agents if rotation continues to fail.
+          runbook: "https://github.com/spiffe/spire/tree/main/doc"
